@@ -392,7 +392,7 @@
   * 实现框架有 Apache Storn和 Apache Flink以及 Apache beam。
   * ![image-20210603151233305](flink.assets/image-20210603151233305.png)
 
-### 3.2 Flink DataStream API架构及原理
+### 3.2 DataStream API架构及使用
 
 #### 3.2.1 API架构
 
@@ -499,6 +499,541 @@
 * 转换具体操作
   * ![image-20210603165340285](flink.assets/image-20210603165340285.png)
 
-* Data Steam间的转换
+* DataSteam间的转换
   * ![image-20210603165444148](flink.assets/image-20210603165444148.png)
+
+* DataStream物理分组操作
+  * ![image-20210603224457160](flink.assets/image-20210603224457160.png)
+
+### 3.3 Time & Watermark & Windows
+
+#### 3.3.1 概念介绍
+
+* Time
+  * event time : 事件发生的时间
+  * storage time：进入消息队列的时间
+  * ingestion time：接入flink中的时间
+  * processing time：处理时间
+
+* Watermark
+
+  * 功能
+
+    * 解决乱序的事件处理，保证在一定窗口的时间段内事件的有效性（小于watermark的事件都已过期，失效）
+
+  * 实现
+
+    * maxOutOfOrderness = 4![image-20210606220538481](flink.assets/image-20210606220538481.png)
+
+    * 1. 当有**新的最大时间戳**出现时，source operator就会基于maxOutOfOrderness产生新的Watermark 
+
+         (注：此处为**Periodic** watermark生成方式（常用方式），Punctuated watermark生成方式不基于最大时间戳，而是通过event stream 里面的一些属性，比如某个字段是否存在来判断是否产生一个新的watermark)
+
+      2. 如上图事件7到来时，此时没有事件发生，所以会生成一个watermark，（= 最大事件戳-maxOutOfOrderness），即为3，插入stream中，此时，当后续operator收到事件的时间戳小于3，则说明失效直接丢弃
+
+      3. 这样就保证了即使stream是无序的，但如果事件的时间戳的误差范围大于maxOutOfOrderness，则直接丢弃。（maxOutOfOrderness即可理解为最大的误差范围，只要事件的时间戳在这范围以内都可以接受）
+
+  * **Periodic** watermark例子
+
+    * ![image-20210608230610032](flink.assets/image-20210608230610032.png)
+
+  * Punctuated watermark例子
+
+    * ![image-20210608230559499](flink.assets/image-20210608230559499.png)
+
+* Windows
+
+  * 概念
+
+    * Windows are at the heart of processing infinite streams. Windows split the stream into “buckets” of finite size, over which we can apply computations. 
+
+    * ```
+      Windows 是处理无限流的核心。 Windows 将流拆分为有限大小的“桶”，我们可以对其进行计算。
+      ```
+
+  * **支持的窗口类型**
+    * ![image-20210609111841390](flink.assets/image-20210609111841390.png)
+    * 按时间划分窗口
+      * Sliding Window（滑动窗口）
+        * 涉及相关的概念
+          * Window Size：窗口大小
+          * Window Slide：滑动间隔
+        * 滑动窗口的定义
+          * 滑动窗口以一个步长（Slide）不断向前滑动，窗口的长度固定
+        * 特点
+          * 数据可以被重复计算，取决于Size 和Slide Time
+            * Slide Time < Window Size 数据在多个窗口中统计
+            * Slide Time > Window Size：数据可能不再任何一个Window 中
+        * 例子
+          * 每隔5 min 统计前10 min 的总数
+          * 此时Slide Time=5min，Window Size =10min 那么每隔5分钟统计一次窗口的总数，5-10分钟的数据就会被计算两次
+          * ![image-20210609112732819](flink.assets/image-20210609112732819.png)
+      * Tumbliing Window（滚动窗口）
+        * 概念
+          * 滚动窗口是特殊的滑动窗口，**滑动间隔 Slide Time= 窗口大小Window Size**
+        * 例子
+          * 每隔5分钟统计一次总数
+          * ![image-20210609113347704](flink.assets/image-20210609113347704.png)
+      * Session Window
+        * 概念
+          * 根据Session gap 切分不同的窗口，当一个窗口在大于Session gap 的时间内没有接收到新数据时，窗口关闭。
+        * 特点
+          * Window Size 可变
+        * 例子
+          * 如近5分钟没有数据，就进行一次窗口统计
+          * ![image-20210609114912894](flink.assets/image-20210609114912894.png)
+      * Global Window
+        * 概念
+          * **所有的元素都在一个窗口中**，上述的三种类型可以理解为都是基于global window，按指定的窗口大小和特定的trigger触发条件做划分
+        * ![global windows](flink.assets/non-windowed.svg)
+    * 按次数划分窗口
+      * 滚动count
+      * 滑动count
+  * windows处理流程
+    
+    * ![image-20210608231642434](flink.assets/image-20210608231642434.png)
+
+#### 3.3.2 windows使用
+
+* ![image-20210608231802119](flink.assets/image-20210608231802119.png)
+
+* 相关概念
+
+  * Window Assigner
+
+    * 功能：将数据流中的**元素**按照**既定的规则分配到对应的窗口**
+    * 特点：
+      * flink自带的一些Assigner实现类都携带**默认的窗口触发条件（Trigger）和过滤条件（Evictor）**
+      * 额外添加Trigger和Evictor会覆盖原有的默认实现
+
+  * Window Trigger
+
+    * 功能：决定了何时启动Window Function 来处理窗口中的数据以及何时将窗口内的数据清理
+
+    * 内置trigger
+
+      * ![截屏2021-06-09 下午1.45.25](flink.assets/截屏2021-06-09 下午1.45.25.png)
+
+    * Trigger抽象类方法
+
+      * The `onElement()` method is called for each element that is added to a window.
+      * The `onEventTime()` method is called when a registered event-time timer fires.
+      * The `onProcessingTime()` method is called when a registered processing-time timer fires.
+      * The `onMerge()` method is relevant for stateful triggers and merges the states of two triggers when their corresponding windows merge, *e.g.* when using session windows.
+      * Finally the `clear()` method performs any action needed upon removal of the corresponding window.
+
+    * Trigger方法说明
+
+      * onElement、onEventTime、onProcessingTime通过这三个方法去实现是否触发逻辑，通过返回枚举对象TriggerResult（CONTINUE、FIRE、PURGE）来控制是否触发窗口处理数据，任一一个方法返回FIRE都触发，所以可以基于element元素的到来，也可以基于时间来触发
+
+    * 例子
+
+      * ```
+        EventTimeTrigger ：基于eventTime时间来触发
+        
+        @Override
+        	public TriggerResult onElement(Object element, long timestamp, TimeWindow window, TriggerContext ctx) throws Exception {
+        		if (window.maxTimestamp() <= ctx.getCurrentWatermark()) {
+        			// if the watermark is already past the window fire immediately
+        			return TriggerResult.FIRE;
+        		} else {
+        			ctx.registerEventTimeTimer(window.maxTimestamp());
+        			return TriggerResult.CONTINUE;
+        		}
+        	}
+        
+        	@Override
+        	public TriggerResult onEventTime(long time, TimeWindow window, TriggerContext ctx) {
+        		return time == window.maxTimestamp() ?
+        			TriggerResult.FIRE :
+        			TriggerResult.CONTINUE;
+        	}
+        
+        	@Override
+        	public TriggerResult onProcessingTime(long time, TimeWindow window, TriggerContext ctx) throws Exception {
+        		return TriggerResult.CONTINUE;
+        	}
+        ```
+
+  * Window Evictor
+
+    * 功能：排除掉某些element，在执行 window function之前或者之后
+
+    * 疑问：在function之后排除有什么用？？
+
+    * 例子(CountEvictor : 当数量大于设定的数量时，排除掉最前面的多出来的element)
+
+    * ```
+      @Override
+      	public void evictBefore(Iterable<TimestampedValue<Object>> elements, int size, W window, EvictorContext ctx) {
+      		if (!doEvictAfter) {
+      			evict(elements, size, ctx);
+      		}
+      	}
+      
+      	@Override
+      	public void evictAfter(Iterable<TimestampedValue<Object>> elements, int size, W window, EvictorContext ctx) {
+      		if (doEvictAfter) {
+      			evict(elements, size, ctx);
+      		}
+      	}
+      
+      	private void evict(Iterable<TimestampedValue<Object>> elements, int size, EvictorContext ctx) {
+      		if (size <= maxCount) {
+      			return;
+      		} else {
+      			int evictedCount = 0;
+      			for (Iterator<TimestampedValue<Object>> iterator = elements.iterator(); iterator.hasNext();){
+      				iterator.next();
+      				evictedCount++;
+      				if (evictedCount > size - maxCount) {
+      					break;
+      				} else {
+      					iterator.remove();
+      				}
+      			}
+      		}
+      	}
+      ```
+
+    * 
+
+  * Window Function
+
+    * 分类
+      * ReduceFunction
+        * 特点：增量计算，窗口只保存上次处理过的数据，且输入输出同类型
+      * AggregateFunction
+        * 增量计算，窗口只保存上次聚合之后的结果数据
+      * ProcessWindowFunction
+        * 特别之处：会保存整个窗口的全部数据，每次计算都可以获取到全部的窗口元数据
+
+  * SideOutput
+
+    * 功能：对流进行拆分，直接使用在ProcessFunction进行定义筛选逻辑
+
+    * 代码
+
+      * ```
+        DataStream<Integer> input = ...;
+        
+        final OutputTag<String> outputTag = new OutputTag<String>("side-output"){};
+        
+        SingleOutputStreamOperator<Integer> mainDataStream = input
+          .process(new ProcessFunction<Integer, Integer>() {
+        
+              @Override
+              public void processElement(
+                  Integer value,
+                  Context ctx,
+                  Collector<Integer> out) throws Exception {
+                // emit data to regular output
+                out.collect(value);
+        
+                // emit data to side output
+                ctx.output(outputTag, "sideout-" + String.valueOf(value));
+              }
+            });
+        
+        DataStream<String> sideOutputStream = mainDataStream.getSideOutput(outputTag);
+        ```
+
+#### 3.3.3 window多流合并
+
+* window join
+  * 特点：基于相同的窗口进行合并，窗口的类型要一致，只合并两个流中都存在的元素。
+  * 疑惑：
+    * notes：
+      * Those elements that do get joined will have as their timestamp the largest timestamp that still lies in the respective window. For example a window with `[5, 10)` as its boundaries would result in the joined elements having 9 as their timestamp. 这句话怎么理解？
+  * 分类（这三类只是window划分的区别，join的逻辑都是跟上述的特点一致）
+    * Session Window Join 
+      * ![img](flink.assets/session-window-join.svg)
+    * Sliding Window Join
+      * ![img](flink.assets/sliding-window-join.svg)
+    * Tumbling Window Join
+      * ![img](flink.assets/tumbling-window-join.svg)
+* interval join
+  * 特点：
+    * 定义了两个上下界的误差范围（下界：lowerBound，上界：upperBound），在这个区间内，都属于可以连接的元素
+    * 公式：orangeElem.ts + lowerBound <= greenElem.ts <= orangeElem.ts + upperBound
+  * 例子：
+    * 橙色intervalJoin绿色，lowerBound=-2，upperBound=1，此时，橙元素2，可连接的元素有绿色0、1，橙色2的连接区间为绿色值域[0,3]
+    * ![img](flink.assets/interval-join.svg)
+
+### 3.4 Process Function
+
+* 介绍
+
+  * 低阶流处理算子（可参考3.2.1API架构），可以访问流应用程序所有（非循环）基本构建块：
+
+    • 事件（数据流元素）
+
+    • 状态（容错和一致性）
+
+    • 定时器（事件时间和处理时间）
+
+* 数据处理节点
+
+  * 对于每一个接入的数据元素
+
+    * ```
+      /**
+      * Process one element from the input stream.
+      */
+      void processElement(I value, Context ctx, Collector<O> out) throws Exception;
+      ```
+
+    * 可执行的操作
+
+      * 更新数据状态
+      * 注册未来某一时间需要调用的callback 回调函数
+
+  * 当某一时间到来后
+
+    * ```
+      /**
+      * Called when a timer set using {@link TimerService} fires.
+      */
+      void onTimer(long timestamp, OnTimerContext ctx, Collector<O> out) throws
+      Exception;
+      ```
+
+    * 可执行的操作
+
+      * 检查条件是否满足，并执行对应的行为，例如输出数据元素等
+
+  * 例子
+
+    * 实现的功能
+
+      * 记录每个传入的Key 的counts 数量
+      * 如果指定的Key 在最近100ms（Event Time）没有接收到任何Element，则输出key/count 键值对
+
+    * 实现逻辑
+
+      * 1. 存储count 值，key 以及最后更新的TimeStamp 到ValueState 中，ValueState 由key隐含定义；
+
+        2. 对于每条记录
+
+           更新计数器并修改最后的时间戳， 注册一个100ms timer 计时器，起始时间从当前的EventTime 开始
+
+        3. Times 被回调时：
+
+           检查存储计数的最后修改时间与回调的事件时间TimeStamp，如果匹配则发送键/计数键值对（即在100ms内没有更新）
+
+    * 代码
+
+      * ```
+        // the data type stored in the state
+        public class CountWithTimestamp {
+        public String key;
+        public long count;
+        public long lastModified;
+        }
+        // apply the process function onto a keyed stream
+        DataStream<Tuple2<String, Long>> result = stream
+        .keyBy(0)
+        .process(new CountWithTimeoutFunction());
+        
+        public class CountWithTimeoutFunction extends
+        RichProcessFunction<Tuple2<String, String>, Tuple2<String, Long>> {
+        @Override
+        public void processElement(Tuple2<String, Long> value, Context ctx,
+        Collector<Tuple2<String, Long>> out) throws Exception {
+        CountWithTimestamp current = state.value();
+        if (current == null) {
+        current = new CountWithTimestamp();
+        current.key = value.f0;
+        }
+        current.count++;
+        current.lastModified = ctx.timestamp();
+        state.update(current);
+        ctx.timerService().registerEventTimeTimer(current.lastModified + 100);
+        }
+        
+        @Override
+        public void onTimer(long timestamp, OnTimerContext ctx,
+        Collector<Tuple2<String, Long>> out) throws Exception {
+        CountWithTimestamp result = state.value();
+        if (timestamp == result.lastModified + 100) {
+        out.collect(new Tuple2<String, Long>(result.key, result.count));
+        state.clear();
+        }
+        }
+        }
+        ```
+
+### 3.5 Asynchronous I/O 异步操作
+
+* 功能：异步I/O操作
+
+* 特点
+
+  * 通过缓存一批数据，再发起异步调用，支持有序和无序（有序：：根据数据元素到达算子的先后关系进行输出；无序：根据数据查询完成的先后进行输出）
+
+* 代码
+
+  * ```
+    public interface AsyncFunction<IN, OUT> extends Function, Serializable {
+    /**
+    * Trigger async operation for each stream input.
+    */
+    void asyncInvoke(IN input, ResultFuture<OUT> resultFuture) throws Exception;
+    /**
+    * {@link AsyncFunction#asyncInvoke} timeout occurred.
+    * By default, the result future is exceptionally completed with a timeout exception.
+    */
+    default void timeout(IN input, ResultFuture<OUT> resultFuture) throws Exception {
+    resultFuture.completeExceptionally(
+    new TimeoutException("Async function call has timed out."));
+    }
+    }
+    ```
+
+* 使用例子
+
+  * ![image-20210620121049135](flink.assets/image-20210620121049135.png)
+
+  * ```
+    /**
+     * An implementation of the 'AsyncFunction' that sends requests and sets the callback.
+     */
+    class AsyncDatabaseRequest extends RichAsyncFunction<String, Tuple2<String, String>> {
+    
+        /** The database specific client that can issue concurrent requests with callbacks */
+        private transient DatabaseClient client;
+    
+        @Override
+        public void open(Configuration parameters) throws Exception {
+            client = new DatabaseClient(host, post, credentials);
+        }
+    
+        @Override
+        public void close() throws Exception {
+            client.close();
+        }
+    
+        @Override
+        public void asyncInvoke(String key, final ResultFuture<Tuple2<String, String>> resultFuture) throws Exception {
+    
+            // issue the asynchronous request, receive a future for result
+            final Future<String> result = client.query(key);
+    
+            // set the callback to be executed once the request by the client is complete
+            // the callback simply forwards the result to the result future
+            CompletableFuture.supplyAsync(new Supplier<String>() {
+    
+                @Override
+                public String get() {
+                    try {
+                        return result.get();
+                    } catch (InterruptedException | ExecutionException e) {
+                        // Normally handled explicitly.
+                        return null;
+                    }
+                }
+            }).thenAccept( (String dbResult) -> {
+                resultFuture.complete(Collections.singleton(new Tuple2<>(key, dbResult)));
+            });
+        }
+    }
+    
+    // create the original stream
+    DataStream<String> stream = ...;
+    
+    // apply the async I/O transformation
+    DataStream<Tuple2<String, String>> resultStream =
+        AsyncDataStream.unorderedWait(stream, new AsyncDatabaseRequest(), 1000, TimeUnit.MILLISECONDS, 100);
+    
+    ```
+
+### 3.6 StreamGraph 与JobGraph 的转换
+
+* 步骤
+  * 把所有的算子转化操作，抽象成transformation对象，并按顺序添加到env上下文的transformations（List对象）中。
+    * ![image-20210620181214356](flink.assets/image-20210620181214356.png)
+    * streampoeratorfactory提供了实例化operator对象的功能
+  * 把streamdataflow转成streamGraph
+    * 把streamoperator转成streamNode
+    * 对node之间通过streamedgeEdge
+  * streamGraph生成jobGraph
+    * steamNode对应verterx
+    * 中间结果
+  * JobGraph 生成Execution Graph（jobmanager执行）
+
+### 3.7 Flink 类型系统
+
+* TypeInformation 作用（flink中指定对应的类型的作用）：
+  * Flink对数据类型了解得越多，序列化和数据Schema布局就越好，数据处理也更方便；
+  *  在大多数情况下，可以使用户不必担心序列化框架和以及类型注册；
+  * 基于Flink 自身的数据序列化能力，可以直接将数据序列化成二进制数据格式存储在内存中；
+
+* Flink 类型分类
+  * ![image-20210620122049725](flink.assets/image-20210620122049725.png)
+  * ![image-20210620122112343](flink.assets/image-20210620122112343.png) 
+
+* flink中Values类型
+  * value中主要的类型
+    * ByteValue,ShortValue, IntValue, LongValue, FloatValue, DoubleValue, StringValue, CharValue, BooleanValue
+  * value类型的优势
+    * 和普通数据类型基本功能一样，就是做了一些性能上的升级
+      * 实现org.apache.flinktypes.Value 接口，实现了更高效的序列化和反序列化能力；
+      * 可以支持修改，对象复用，以及基于二进制数据密集型存储，减轻GC 压力以及内存消耗等
+
+* 创建TypeInformation
+  * 通常情况下Flink 会根据Function 签名和子类自动生成TypeInformation，无需用户指定
+  * Java 会在执行过程中将泛型类型擦除，因此数据类型中如果使用到**泛型，此时就需要显性**的
+
+### 3.8 自定义Source 与Sink
+
+* 实现
+
+  * 流处理
+
+    * 通过继承sourcefunction接口
+
+    * ```
+      public interface SourceFunction<T> extends Function, Serializable {
+      void run(SourceContext<T> ctx) throws Exception;
+      void cancel();
+      interface SourceContext<T> {
+      void collect(T element);
+      @PublicEvolving
+      void collectWithTimestamp(T element, long timestamp);
+      @PublicEvolving
+      void emitWatermark(Watermark mark);
+      @PublicEvolving
+      void markAsTemporarilyIdle();
+      Object getCheckpointLock();
+      void close();
+      }
+      }
+      ```
+
+  * 批处理
+
+    * 继承inputFormat接口
+
+    * ```
+      public interface InputFormat<OT, T extends InputSplit> extends InputSplitSource<T>, Serializable {
+      void configure(Configuration parameters);
+      BaseStatistics getStatistics(BaseStatistics cachedStatistics) throws IOException;
+      @Override
+      T[] createInputSplits(int minNumSplits) throws IOException;
+      @Override
+      InputSplitAssigner getInputSplitAssigner(T[] inputSplits);
+      void open(T split) throws IOException;
+      boolean reachedEnd() throws IOException;
+      OT nextRecord(OT reuse) throws IOException;
+      void close() throws IOException;
+      }
+      ```
+
+* 批流一体（beta版尚未发布，以后的方向，统一批流处理方式）
+  * 三个核心组件
+    * Split
+    * SourceReader
+    * SplitEnumerator
+
+## 4.状态管理与容错 
 
