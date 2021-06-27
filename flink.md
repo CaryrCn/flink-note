@@ -8,43 +8,43 @@
 
 * **批量计算**
 
-  * • MapReduce
+  * *  MapReduce
 
-    • Apache Spark
+    *  Apache Spark
 
-    • Hive
+    *  Hive
 
-    • Flink
+    *  Flink
 
-    • Pig
+    *  Pig
 
 * **流式计算**
 
-  * • Storm
+  * *  Storm
 
-    • Spark Streaming
+    *  Spark Streaming
 
-    • Apache Flink
+    *  Apache Flink
 
-    • Samza
+    *  Samza
 
 * 交互计算
 
-  * • Presto
+  * *  Presto
 
-    • Impala
+    *  Impala
 
-    • Druid
+    *  Druid
 
-    • Drill
+    *  Drill
 
 * 图计算
 
-  * • Giraph（Facebook）
+  * *  Giraph（Facebook）
 
-    • Graphx（Spark）
+    *  Graphx（Spark）
 
-    • Gelly（Flink）
+    *  Gelly（Flink）
 
 #### 1.1.2 流计算与批计算差异
 
@@ -441,25 +441,25 @@
 
       * Flink 内置的Connector：
 
-        • Apache Kafka (source/sink)
+        *  Apache Kafka (source/sink)
 
-        • Apache Cassandra (sink)
+        *  Apache Cassandra (sink)
 
-        • Amazon Kinesis Streams (source/sink)
+        *  Amazon Kinesis Streams (source/sink)
 
-        • Elasticsearch (sink)
+        *  Elasticsearch (sink)
 
-        • Hadoop FileSystem (sink)
+        *  Hadoop FileSystem (sink)
 
-        • RabbitMQ (source/sink)
+        *  RabbitMQ (source/sink)
 
-        • Apache NiFi (source/sink)
+        *  Apache NiFi (source/sink)
 
-        • Twitter Streaming API (source)
+        *  Twitter Streaming API (source)
 
-        • Google PubSub (source/sink)
+        *  Google PubSub (source/sink)
 
-        • JDBC (sink)
+        *  JDBC (sink)
 
       * 例子：Kafka 连接器使用
 
@@ -766,11 +766,11 @@
 
   * 低阶流处理算子（可参考3.2.1API架构），可以访问流应用程序所有（非循环）基本构建块：
 
-    • 事件（数据流元素）
+    *  事件（数据流元素）
 
-    • 状态（容错和一致性）
+    *  状态（容错和一致性）
 
-    • 定时器（事件时间和处理时间）
+    *  定时器（事件时间和处理时间）
 
 * 数据处理节点
 
@@ -1035,5 +1035,346 @@
     * SourceReader
     * SplitEnumerator
 
-## 4.状态管理与容错 
+## 4.有状态计算、状态管理与容错 
+
+### 4.1 有状态计算概要
+
+* 传统流计算（无状态）存在的问题
+  * 主要是存在性能问题
+  * ![image-20210622000129533](flink.assets/image-20210622000129533.png)
+* 有状态计算需要解决的问题
+  * ![image-20210622000254601](flink.assets/image-20210622000254601.png)
+  * ![image-20210622000332054](flink.assets/image-20210622000332054.png)
+
+### 4.2 state说明及使用
+
+#### 4.2.1 state类型
+
+* 分类
+  * ![image-20210622234100468](flink.assets/image-20210622234100468.png)
+* Keyed State 与 Operator State差异
+  * ![image-20210622234405359](flink.assets/image-20210622234405359.png)
+
+#### 4.2.2 Keyed State
+
+* 使用的前置条件
+
+  * DataStream需要先经过keyby（）方法转化为KeyedStream才可以使用keyed state
+
+* 分类
+
+  * ValueState<T>
+    * 保存一个value对象，通过`update(T)`和`T value()`更新读取。
+
+  * ListState<T>
+    * 保存一个list对象，通过`add(T)`和`addAll(List<T>)和update(List<T>)和Iterable<T> get()`. 来添加替换读取。
+  * ReducingState<T>
+    * 保存一个value对象，汇总所有添加的element，通过使用ReduceFunction
+  * AggregatingState<IN, OUT>
+    * 与ReducingState不同之处在于，输入对象和汇总后生成的对象类型可以不同
+  * MapState<UK, UV>
+    * 保存一个map对象
+
+* 特点：
+
+  * state有可能保存在磁盘上或者其他地方，不一定保存在内部
+
+  * 对于每个不同的key，都有一个state对象，各自独立，不同的key取到的state的值不同
+
+  * 通过RuntimeContext定义state对象，由state name作为唯一标识符，属性通过new Descriptor对象来设置，并添加到上下文中。
+
+    * 例子
+
+    * ```
+      public class CountWindowAverage extends RichFlatMapFunction<Tuple2<Long, Long>, Tuple2<Long, Long>> {
+      
+          /**
+           * The ValueState handle. The first field is the count, the second field a running sum.
+           */
+          private transient ValueState<Tuple2<Long, Long>> sum;
+      
+          @Override
+          public void open(Configuration config) {
+              ValueStateDescriptor<Tuple2<Long, Long>> descriptor =
+                      new ValueStateDescriptor<>(
+                              "average", // the state name
+                              TypeInformation.of(new TypeHint<Tuple2<Long, Long>>() {}), // type information
+                              Tuple2.of(0L, 0L)); // default value of the state, if nothing was set
+              sum = getRuntimeContext().getState(descriptor);
+          }
+      }
+      
+      ```
+
+* State Time-To-Live (TTL)
+
+  * 功能：为state设置有效时间
+
+  * 例子
+
+    * ```
+      StateTtlConfig ttlConfig = StateTtlConfig
+          .newBuilder(Time.seconds(1))
+          .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
+          .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
+          .build();
+          
+      ValueStateDescriptor<String> stateDescriptor = new ValueStateDescriptor<>("text state", String.class);
+      stateDescriptor.enableTimeToLive(ttlConfig);
+      ```
+
+    * update type
+
+      * StateTtlConfig.UpdateType.OnCreateAndWrite (default): only on creation and write access
+      * StateTtlConfig.UpdateType.OnReadAndWrite : also on read access
+
+    * visibility
+
+      * `StateTtlConfig.StateVisibility.NeverReturnExpired` (default)- expired value is never returned
+      * `StateTtlConfig.StateVisibility.ReturnExpiredIfNotCleanedUp` - returned if still available
+
+  * 清理策略
+
+    * 默认：在read的时候，读到过期的数据进行清理
+
+    * Cleanup in full snapshot
+
+      * 清理过期的state在checkpoint全量快照的时候
+
+      * 使用：
+
+        * ```java
+          StateTtlConfig ttlConfig = StateTtlConfig
+              .newBuilder(Time.seconds(1))
+              .cleanupFullSnapshot()
+              .build();
+          ```
+
+      * 不适用场景：state备份的方式为增量RocksDB的话，此策略无法使用
+
+    * Incremental cleanup
+
+      * 使用：.cleanupIncrementally(10, true)
+        * 在每次访问状态时被触发清理
+        * 参数（10）:每次清理时检查状态条目的数量，默认为5条
+        * 参数（true）：是否在每次记录处理时额外触发清理，默认为false不清理
+      * 说明：
+        * 只适用于 Heap state backend，对于RocksDB backend不生效
+        * 如果没有对状态进行访问或没有处理任何记录，过期状态将保持
+
+    * Cleanup during RocksDB compaction 
+
+      * 
+
+#### 4.2.3 Operator State 
+
+* Operator State 定义
+
+  * 单Operator 具有一个状态，不区分Key
+
+  * State 需要支持重新分布
+
+  * 不常用，主要用于Source 和Sink 节点，像KafkaConsumer 中，维护Offset，Topic 等信息；
+
+  * 实例：BufferSink
+
+* 三种状态类型：
+
+  * ListState
+
+  * UnionListState
+
+  * BroadcastState
+
+* 两种定义方式：
+
+  * 实现CheckpointedFunction 接口定义
+
+    * ```
+      void snapshotState(FunctionSnapshotContext context) throws Exception;
+      
+      void initializeState(FunctionInitializationContext context) throws Exception;
+      ```
+
+  * 实现ListCheckpointed 接口定义(Deprecated)
+
+#### 4.2.4 Broadcast State
+
+### 4.3 checkpoint & savepoint
+
+#### 4.3.1 checkpoint
+
+* checkpoint 执行过程
+  * ![image-20210627005131824](flink.assets/image-20210627005131824.png)
+* 对齐
+  * checkpoint barrier 存在对齐的过程阻塞，所以会影响性能
+* V1.11版本引入**Unaligned Checkpointing**解决
+
+* checkpoint配置
+
+#### 4.3.2 savepoint
+
+* 与checkpoint差异
+  * ![image-20210627011454259](flink.assets/image-20210627011454259.png)
+
+* Savepoint 客户端命令人工触发
+
+  * ```
+    *  Trigger a Savepoint
+    $ bin/flink savepoint :jobId [:targetDirectory]
+    *  Trigger a Savepoint with YARN
+    $ bin/flink savepoint :jobId [:targetDirectory] -yid :yarnAppId
+    *  Cancel Job with Savepoint
+    $ bin/flink cancel -s [:targetDirectory] :jobId
+    *  Resuming from Savepoints
+    $ bin/flink run -s :savepointPath [:runArgs]
+    *  Allowing Non-Restored State
+    $ bin/flink run -s :savepointPath -n [:runArgs]
+    *  Disposing Savepoints
+    $ bin/flink savepoint -d :savepointPath
+    ```
+
+### 4.4 state backend
+
+* 功能：对持久化的管理
+* 划分
+  * ![image-20210627141427562](flink.assets/image-20210627141427562.png)
+
+#### 4.4.1 MemoryStateBackend（默认后端状态管理器）
+
+* 构造方法
+
+  env.setStateBackend(new MemoryStateBackend( "file://" + baseCheckpointPath, null).configure(conf, classLoader))
+
+* 数据存储
+
+  * State 数据存储在TaskManager 内存中
+
+  * Checkpoint 数据数据存储在JobManager 内存
+
+* 容量限制
+  *  单词State maxStateSize 默认为5M
+  * maxStateSize <= akka.framesize 默认10M
+  * 总大小不能超过JobMananger 的内存
+
+* 推荐场景：
+  * 本地测试
+  * 状态比较少的作业
+  * 不推荐生产环境中使用
+
+#### 4.4.2 FsStateBackend
+
+* 构造方法：env.setStateBackend( new FsStateBackend(tmpPath))
+* 数据存储
+  * 状态数据：TaskManager 内存
+  *  Checkpoint：外部文件系统（本地或HDFS）
+* 容量限制
+  * 单个TaskManager上State 总量不能超过TM内存
+  * 总数据大小不超过文件系统容量
+* 推荐场景
+  * 常规状态作业
+  * 窗口时间比较长，如分钟级别窗口聚合，Join 等
+  *  需要开启HA 的作业
+  *  可在生产环境中使用
+
+#### 4.4.3 RocksDBStateBackend
+
+* 创建方法（建议使用增量checkpoints方式）
+
+  env.setStateBackend(new RocksDBStateBackend("file://" + baseCheckpointPath).configure(conf,
+
+  classLoader))
+
+* 数据存储
+
+  *  State：TaskManager 中的KV 数据库（实际使用内存+磁盘）
+
+  *  Checkpoint：外部文件系统（本地或HDFS）
+
+* 容量限制：
+
+  *  单TaskManager 上State 总量不超过其内存+ 磁盘大小
+
+  *  单Key 最大容量2G
+
+  *  总大小不超过配置的文件系统容量
+
+* 推荐场景：
+
+  *  超大状态作业
+
+  *  需要开启HA 的作业
+
+  *  对状态读写性能要求不高的作业
+  *  推荐生产环境使用
+
+### 4.5 应用升级对持久化的影响
+
+#### 4.5.1 影响点
+
+*  Code Update
+   *  业务计算逻辑发生变化
+   *  State 发生改变，无法直接从Old State 中恢复作业
+
+*  Pipeline topology 发生改变
+   *  增加和删除Operators
+
+*  Job 重新配置
+   *  Rescale job/ Operator Parallelism
+   *  Swapping state backend
+
+#### 4.5.2 状态结构更新解决方案
+
+* 例子： 增加state实体增加一个字段
+
+* flink数据类型的支持情况
+
+  * POJO types
+
+    *  删除字段
+       *  字段删除后，删除字段对应的原有值将在新的检查点和保存点中删除
+    *  添加新字段
+       *  新字段将初始化为其类型的默认值，如Java 所定义的那样
+
+    *  定义的字段其类型不能更改（不同类型占用空间不同）
+    *  POJO 类型的Class Name 不能更改，包括类的命名空间
+
+  * Avro types
+
+    *  Flink 完全支持Avro 类型状态的模式演进，只要Avro 的模式解析规则认为模式更改是兼容的
+
+    *  不支持键的模式演化
+
+    *  Kryo 不能用于模式演化
+
+### 4.6 序列化
+
+* 基于堆内存的序列化
+  * FsStateBackend
+  * MemoryStateBackend
+  * 特点
+    * 本地内存中存储的是object未序列化的对象，在持久化的时候进行序列化
+* 基于外部存储的序列化
+  * RocksDBStateBackend
+  * 特点
+    * 基于本地堆外内存和磁盘，在本地时已进行序列化存储，持久化时，只做一个传输操作（已序列化完毕）
+    * 基于序列化后的文件读入本地时，也不进行反序列化，只有在真正要使用时进行反序列化，因为在本地的方式，就是序列化后的对象
+
+### 4.7 querable state
+
+* 功能：可以让flink内部的state数据支持可查询
+
+* 结构
+  * ![image-20210627193434637](flink.assets/image-20210627193434637.png)
+* 流程
+  * ![image-20210627193457830](flink.assets/image-20210627193457830.png)
+
+* flink提供两种查询state方式
+  * 在线
+    * 通过querable state
+    * 特点
+      * 准确，不依赖外部数据库再转一道持久化的操作
+      * 缺点就是如果查询过于频繁和量大会影响在线的任务执行
+  * 离线
+    * savepoint存储离线数据文件，通过分析文件去获取state状态
 
