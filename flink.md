@@ -135,7 +135,7 @@
 
 ## 2. Flink部署与应用
 
-### 2.1 Flink集群架构
+###  <span name = "flink集群架构">2.1 Flink集群架构</span>
 
 * **集群总体架构**
   * ![image-20210601205926537](flink.assets/image-20210601205926537.png)
@@ -1215,8 +1215,9 @@
 #### 4.3.2 savepoint
 
 * 与checkpoint差异
-  * ![image-20210627011454259](flink.assets/image-20210627011454259.png)
-
+  
+* ![image-20210627011454259](flink.assets/image-20210627011454259.png)
+  
 * Savepoint 客户端命令人工触发
 
   * ```
@@ -1377,4 +1378,115 @@
       * 缺点就是如果查询过于频繁和量大会影响在线的任务执行
   * 离线
     * savepoint存储离线数据文件，通过分析文件去获取state状态
+
+## 5.**Flink Table & SQL实践**(待补充)
+
+## 6.Flink Runtime设计与实现
+
+### 6.1  Runtime 整体架构
+
+* 注：可结合<a href="#flink集群架构">2.1flink集群架构</a>了解各个组件的功能，此篇就不再详细介绍了
+
+* RunTime 整体架构
+  * ![image-20210703014910087](flink.assets/image-20210703014910087.png)
+
+* 任务提交流程
+  * ![image-20210703014952476](flink.assets/image-20210703014952476.png)
+    * 步骤1-4说明：
+      * 不同集群资源管理器，使用不同的client提交，然后申请对应的资源，yarn对应的就是Connector资源，k8s就是pod资源（目的就是申请资源启动Application Master节点（管理节点））
+      * 图示的Application Master 指的是flink中的Application Master，而非yarn的Application Master，虽然在yarn模式下也会启动一个yarn内的Application Master节点且跟flink的AM在同个节点，但图示的组件描述指的是flink的AM及对应的功能
+    * 步骤4-10说明：
+      * session的非native模式， TaskManager的资源就已经确定，不会动态调整，所以启动完成之后，会对RM（ResourceManager）做资源的上报注册，便于RM进行slot的资源管理，在jobManager请求资源时变抉择如何分配slot。
+      * 而session的native模式，此时JM请求资源时，因为是native模式，TM是动态调节的此时还没启动，所以没有slot注册上来，那么RM就会去cluster managerment （yarn 或者k8s）去申请container资源，然后yarn（k8s）就会调用相应的脚本去启动TaskManager，启动完成时就会跟非native模式一样，做资源上报注册，然后流程就跟原来一样了。
+
+### 6.2 Client实现原理
+
+* 主要功能
+  * ![image-20210703022326040](flink.assets/image-20210703022326040.png)
+    * 构建PackageProgram功能
+      * 构建classpath、classloader
+        * 比如依赖了kafka的connector，会把它dependence的信息放到classpath里面，并加载到userClassLoader（用户代码的classloader）内
+* 主要组件
+  * ![image-20210703023203351](flink.assets/image-20210703023203351.png)
+  
+    * ContextEnvironment
+      * 可用于多个作业的提交，用于构建不同的ExecutionEnvironment（执行环境）
+
+* Session 集群创建流程
+  
+* ![image-20210714014830518](flink.assets/image-20210714014830518.png)
+  
+* 任务提交流程
+
+  * ![image-20210714014855386](flink.assets/image-20210714014855386.png)
+
+    
+
+### 6.3 ResourceManager
+
+* ![image-20210714234323950](flink.assets/image-20210714234323950.png)
+
+* Slot 资源组成
+
+  * <img src="flink.assets/image-20210714234403477.png" alt="image-20210714234403477" style="zoom:50%;" />
+
+    *  TM有固定数量的Slot 资源
+
+    *  Slot 数量由配置决定
+
+    *  Slot 资源由TM 资源及Slot 数量决定
+
+    *  同一TM 上的Slot 之间无差别
+
+  *  Slot Sharing:
+
+    *  Slot Sharing Group 任务共享Slot计算资源
+
+    * 单个Slots 中相同任务只能有一个
+
+* ResourceManager 分类
+
+  * <img src="flink.assets/image-20210714234939969.png" alt="image-20210714234939969" style="zoom:50%;" />
+
+  *  Standalone 部署模式
+
+  * ActiveResourceManager 部署模式
+    *  Kubernetes，Yarn，Mesos
+
+    *  Slot 数量按需分配，根据Slot Request 请求数量启动TaskManager
+    *  TaskManager 空闲一段时间后，超时释放
+    *  On-Yarn 部署模式不再支持固定数量的TaskManager
+       *  <u>注：session模式不是有非native模式吗，那不是就是在启动的时候指定TM数量的么，为什么说没有？</u>
+
+* Job 资源调度
+  * ![image-20210714234713741](flink.assets/image-20210714234713741.png)
+
+### 6.4 Dispatcher
+
+* 内部结构图
+  * ![image-20210717105455678](flink.assets/image-20210717105455678.png)
+
+* 功能
+
+  * 集群重要组件之一，主要负责JobGraph 的接收
+
+  * 根据JobGraph 启动JobManager
+
+  * RpcEndpoint 服务
+
+  * 通过DispatcherGateway Rpc 对外提供服务
+
+  * 从ZK 中恢复JobGraph （HA 模式）
+
+  * 保存整个集群的Job 运行状态
+
+* 组件
+  * ![image-20210717110754476](flink.assets/image-20210717110754476.png)
+
+* 启动流程
+  * ![image-20210717110840213](flink.assets/image-20210717110840213.png)
+* 任务接收流程
+  * ![image-20210717110846930](flink.assets/image-20210717110846930.png)
+    * leaderElectionService
+      * 高可用模块，实现一套选主机制，JM（jobmanager）、RM（resourcenamager）、dispatcher都会实现这个接口。对于JobMaster他是一个竞选者（leaderElection），它的启动，都是需要调用leaderElectionService服务去启动。所以需要jobManagerRunner调用leaderElectionService，来启动一个master节点
 
